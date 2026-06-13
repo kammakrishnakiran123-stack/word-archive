@@ -145,7 +145,7 @@ jobs:
                 raw_summary = query_gemini_api(summary_prompt, markdown_content)
                 ai_tags_string = query_gemini_api(tags_prompt, markdown_content)
                 
-                # FIXED: Sanitize strings safely before placing them inside the file headers
+                # Sanitize strings safely outside of the f-string layout block
                 clean_summary = raw_summary.replace('&quot;', '').replace('&amp;', '&').replace('"', '')
                 if not ai_tags_string.startswith('['):
                     ai_tags_string = "['documents', 'archive']"
@@ -157,7 +157,7 @@ jobs:
                         out_file.write(f"source_file: \"{filename}\"\n")
                         out_file.write(f"processed_at: \"{datetime.now().strftime('%Y-%m-%d')}\"\n")
                         out_file.write(f"extraction_engine: \"{extraction_method}\"\n")
-                        out_file.write(f"summary: \"{clean_summary}\"\n") # Clean string reference, no backslashes inside f-string!
+                        out_file.write(f"summary: \"{clean_summary}\"\n")
                         out_file.write(f"tags: {ai_tags_string}\n")
                         out_file.write("---\n\n")
                         out_file.write(markdown_content)
