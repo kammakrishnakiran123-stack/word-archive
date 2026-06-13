@@ -1,0 +1,239 @@
+name: Ultimate Unified Document Processor
+
+on:
+  push:
+    paths:
+      - 'word_files/**.docx'
+      - 'word_files/**.doc'
+
+jobs:
+  process-word-vault:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+    - name: Checkout Repository
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.10'
+        cache: 'pip'
+        cache-dependency-path: '.github/workflows/word-processor.yml'
+
+    - name: Install Advanced System & Format Libraries
+      run: |
+        sudo apt-get update
+        # Install LibreOffice headless to silently handle converting old legacy .doc files to .docx
+        sudo apt-get install -y libreoffice-writer
+        pip install mammoth docx2txt
+
+    - name: Run Master Robust Document Processing Engine
+      env:
+        GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+      run: |
+        python - << 'EOF'
+        import os
+        import json
+        import subprocess
+        import urllib.request
+        import mammoth
+        import docx2txt
+        from datetime import datetime
+
+        source_folder = 'word_files'
+        output_folder = 'formatted_markdown'
+        os.makedirs(source_folder, exist_ok=True)
+        os.makedirs(output_folder, exist_ok=True)
+
+        api_key = os.environ.get("GEMINI_API_KEY")
+
+        def query_gemini_api(prompt_text, text_content):
+            """Safely communicates with Gemini 2.5 Flash API with built-in connection fallback protection."""
+            if not api_key:
+                return "AI Metadata compilation skipped: API Key missing."
+            
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={api_key}"
+            payload = {
+                "contents": [{
+                    "parts": [{"text": f"{prompt_text}\n\nDocument Extract (Truncated for Context Window):\n{text_content[:6000]}"}]
+                }]
+            }
+            try:
+                req = urllib.request.Request(
+                    url, 
+                    data=json.dumps(payload).encode('utf-8'), 
+                    headers={'Content-Type': 'application/json'}
+                )
+                with urllib.request.urlopen(req, timeout=30) as response:
+                    res_data = json.loads(response.read().decode('utf-8'))
+                    return res_data['candidates'][0]['content']['parts'][0]['text'].strip()
+            except Exception as e:
+                return f"AI Generation timeout/error: {str(e)}"
+
+        # RECURSIVE VAULT WALK ENGINE
+        for dirpath, _, filenames in os.walk(source_folder):
+            for filename in filenames:
+                file_path = os.path.join(dirpath, filename)
+                ext = os.path.splitext(filename)[1].lower()
+                base_name = os.path.splitext(filename)[0]
+
+                # Skip locked MS Word metadata cache fragments
+                if filename.startswith('~$') or ext not in ['.doc', '.docx']:
+                    continue
+
+                # Mirror directory path mapping structure
+                rel_path = os.path.relpath(dirpath, source_folder)
+                target_dir = output_folder if rel_path == '.' else os.path.join(output_folder, rel_path)
+                os.makedirs(target_dir, exist_ok=True)
+                md_path = os.path.join(target_dir, f"{base_name}.md")
+
+                # Defensive processing check: skip redundant runs if matching output exists
+                if os.path.exists(md_path):
+                    continue
+
+                print(f"Initializing parsing sequence for: {file_path}")
+                current_working_file = file_path
+                temp_docx_created = False
+
+                # FEATURE 1: Legacy .doc File Handling via Headless LibreOffice Conversion
+                if ext == '.doc':
+                    print(f"Legacy .doc format detected. Converting to standard .docx using LibreOffice...")
+                    try:
+                        # Convert .doc to .docx into the same subdirectory
+                        result = subprocess.run([
+                            'libreoffice', '--headless', '--convert-to', 'docx',
+                            '--outdir', dirpath, file_path
+                        ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=60)
+                        
+                        expected_docx = os.path.join(dirpath, f"{base_name}.docx")
+                        if os.path.exists(expected_docx):
+                            current_working_file = expected_docx
+                            temp_docx_created = True
+                            print(f"Successfully bridged legacy file down to modern .docx structure.")
+                        else:
+                            raise FileNotFoundError(f"LibreOffice report: Conversion execution silently dropped output. Error logs: {result.stderr}")
+                    except Exception as err:
+                        print(f"CRITICAL CRASH: Legacy .doc conversion engine failure on file {filename}: {err}")
+                        continue
+
+                # FEATURE 2: High-Fidelity Extraction Engine with Built-in Fallbacks
+                markdown_content = ""
+                extraction_method = "Mammoth Rich Text Conversion Engine"
+                
+                try:
+                    # Primary High-Fidelity Method: Mammoth (Retains headings, tables, bold, italics)
+                    with open(current_working_file, "rb") as docx_file:
+                        result = mammoth.convert_to_markdown(docx_file)
+                        markdown_content = result.value
+                        
+                        # Defend against parsing blank files or unreadable binary chunks
+                        if not markdown_content or markdown_content.strip() == "":
+                            raise ValueError("Primary parser generated blank text stream. Redirecting execution to text fallback engine...")
+                except Exception as primary_error:
+                    print(f"Warning: Primary styling parser bypassed for {filename}. Cause: {primary_error}")
+                    
+                    # Core Fallback Method: Docx2Txt (Strips formatting but completely isolates structural text strings safely)
+                    try:
+                        extraction_method = "Docx2Txt Flat Text Extraction Fallback"
+                        fallback_raw_text = docx2txt.process(current_working_file)
+                        if fallback_raw_text:
+                            markdown_content = f"# Extracted Document Content (Plaintext Restructure)\n\n{fallback_raw_text}"
+                        else:
+                            raise EOFError("All text parsing engines evaluated the target file stream as completely empty.")
+                    except Exception as critical_fallback_error:
+                        print(f"FATAL ERROR: Could not parse text strings from file {filename}: {critical_fallback_error}")
+                        continue
+
+                # FEATURE 3: Intelligent Gemini Metadata & Smart Tag Generation
+                summary_prompt = "Analyze this text segment and return exactly one clear, professional executive summary sentence highlighting the target objective."
+                tags_prompt = "Analyze this text segment and return exactly one single-line JSON list containing 3 descriptive, thematic category tags. Example: ['finance', 'legal', 'agreements']."
+                
+                ai_summary = query_gemini_api(summary_prompt, markdown_content)
+                ai_tags_string = query_gemini_api(tags_prompt, markdown_content)
+                
+                # Format Verification: Sanitize tags array to guarantee safety for Obsidian parsing
+                if not ai_tags_string.startswith('['):
+                    ai_tags_string = "['documents', 'archive']"
+
+                # FEATURE 4: Clean Markdown Generation with Unified Front Matter
+                try:
+                    with open(md_path, 'w', encoding='utf-8') as out_file:
+                        out_file.write("---\n")
+                        out_file.write(f"source_file: \"{filename}\"\n")
+                        out_file.write(f"processed_at: \"{datetime.now().strftime('%Y-%m-%d')}\"\n")
+                        out_file.write(f"extraction_engine: \"{extraction_method}\"\n")
+                        out_file.write(f"summary: \"{ai_summary.replace('&quot;', '').replace('&amp;', '&').replace('\"', '')}\"\n")
+                        out_file.write(f"tags: {ai_tags_string}\n")
+                        out_file.write("---\n\n")
+                        out_file.write(markdown_content)
+                    print(f"Markdown file generated successfully at: {md_path}")
+                except IOError as io_err:
+                    print(f"File writing error while creating Markdown for {filename}: {io_err}")
+                    continue
+
+                # FEATURE 5: Clean-up Operations (Pruning original files)
+                try:
+                    os.remove(file_path) # Deletes original .doc or .docx
+                    if temp_docx_created and os.path.exists(current_working_file):
+                        os.remove(current_working_file) # Cleans up temporary bridged files
+                    print(f"Successfully optimized file storage and pruned asset: {filename}")
+                except Exception as prune_err:
+                    print(f"Cleanup non-fatal warning for asset {filename}: {prune_err}")
+
+        # FEATURE 6: Auto-Index Syncing File Generation
+        print("Re-indexing unified document library grid tracking matrices...")
+        catalog_path = "VAULT_INDEX.md"
+        all_markdown_files = []
+        for dirpath, _, filenames in os.walk(output_folder):
+            for f in filenames:
+                if f.endswith('.md'):
+                    all_markdown_files.append(os.path.join(dirpath, f))
+
+        try:
+            with open(catalog_path, "w", encoding="utf-8") as cat_file:
+                cat_file.write("# 📚 Advanced Document Archive Index\n\n")
+                cat_file.write(f"Last fully synchronized: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} UTC\n\n")
+                cat_file.write("| Document | Engine | Themes / Category Tags | Quick Abstract Insights | Repository Access Link |\n")
+                cat_file.write("| :--- | :--- | :--- | :--- | :--- |\n")
+                
+                for mdp in sorted(all_markdown_files):
+                    fname = os.path.basename(mdp)
+                    clean_display = fname.replace(".md", "").replace("_", " ").title()
+                    
+                    # Establish fallback default tracking strings
+                    engine_used = "Standard"
+                    tags_list = "['general']"
+                    abstract_summary = "Summary metadata compilation index pending."
+                    
+                    try:
+                        with open(mdp, 'r', encoding='utf-8') as rf:
+                            lines = rf.readlines()[:15]
+                            for line in lines:
+                                if line.startswith("extraction_engine:"): engine_used = line.split(":")[1].strip().replace('"', '')
+                                if line.startswith("tags:"): tags_list = line.split(":")[1].strip()
+                                if line.startswith("summary:"): abstract_summary = line.split(":")[1].strip().replace('"', '')
+                    except Exception as meta_read_err:
+                        print(f"Could not read index frontmatter for file {fname}: {meta_read_err}")
+                        
+                    cat_file.write(f"| **{clean_display}** | {engine_used} | `{tags_list}` | {abstract_summary} | [[{mdp}\\|Read Document]] |\n")
+            print("Vault tracking catalog built successfully.")
+        except Exception as catalog_write_err:
+            print(f"Critical index write block issue: {catalog_write_err}")
+        EOF
+
+    - name: Commit and Push System Updates
+      run: |
+        git config --global user.name "github-actions[bot]"
+        git config --global user.email "github-actions[bot]@users.noreply.github.com"
+        git add -A
+        if ! git diff --cached --quiet; then
+          git commit -m "Archive Sync: Deep structure document translation pipeline executed"
+          git push origin HEAD:main
+        else
+          echo "No structural adjustments detected. Workspace index matches remote origin."
+        fi
