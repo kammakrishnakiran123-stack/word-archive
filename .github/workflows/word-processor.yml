@@ -28,7 +28,6 @@ jobs:
     - name: Install Advanced System & Format Libraries
       run: |
         sudo apt-get update
-        # Install LibreOffice headless to silently handle converting old legacy .doc files to .docx
         sudo apt-get install -y libreoffice-writer
         pip install mammoth docx2txt
 
@@ -75,24 +74,21 @@ jobs:
             except Exception as e:
                 return f"AI Generation timeout/error: {str(e)}"
 
-        # RECURSIVE VAULT WALK ENGINE
+        # RECURSIVE FOLDER SCANNING
         for dirpath, _, filenames in os.walk(source_folder):
             for filename in filenames:
                 file_path = os.path.join(dirpath, filename)
                 ext = os.path.splitext(filename)[1].lower()
                 base_name = os.path.splitext(filename)[0]
 
-                # Skip locked MS Word metadata cache fragments
                 if filename.startswith('~$') or ext not in ['.doc', '.docx']:
                     continue
 
-                # Mirror directory path mapping structure
                 rel_path = os.path.relpath(dirpath, source_folder)
                 target_dir = output_folder if rel_path == '.' else os.path.join(output_folder, rel_path)
                 os.makedirs(target_dir, exist_ok=True)
                 md_path = os.path.join(target_dir, f"{base_name}.md")
 
-                # Defensive processing check: skip redundant runs if matching output exists
                 if os.path.exists(md_path):
                     continue
 
@@ -100,11 +96,10 @@ jobs:
                 current_working_file = file_path
                 temp_docx_created = False
 
-                # FEATURE 1: Legacy .doc File Handling via Headless LibreOffice Conversion
+                # Legacy .doc Converter
                 if ext == '.doc':
                     print(f"Legacy .doc format detected. Converting to standard .docx using LibreOffice...")
                     try:
-                        # Convert .doc to .docx into the same subdirectory
                         result = subprocess.run([
                             'libreoffice', '--headless', '--convert-to', 'docx',
                             '--outdir', dirpath, file_path
@@ -114,60 +109,55 @@ jobs:
                         if os.path.exists(expected_docx):
                             current_working_file = expected_docx
                             temp_docx_created = True
-                            print(f"Successfully bridged legacy file down to modern .docx structure.")
                         else:
-                            raise FileNotFoundError(f"LibreOffice report: Conversion execution silently dropped output. Error logs: {result.stderr}")
+                            raise FileNotFoundError(f"LibreOffice conversion failed. Error: {result.stderr}")
                     except Exception as err:
                         print(f"CRITICAL CRASH: Legacy .doc conversion engine failure on file {filename}: {err}")
                         continue
 
-                # FEATURE 2: High-Fidelity Extraction Engine with Built-in Fallbacks
+                # Content Extraction Cascade
                 markdown_content = ""
                 extraction_method = "Mammoth Rich Text Conversion Engine"
                 
                 try:
-                    # Primary High-Fidelity Method: Mammoth (Retains headings, tables, bold, italics)
                     with open(current_working_file, "rb") as docx_file:
                         result = mammoth.convert_to_markdown(docx_file)
                         markdown_content = result.value
-                        
-                        # Defend against parsing blank files or unreadable binary chunks
                         if not markdown_content or markdown_content.strip() == "":
-                            raise ValueError("Primary parser generated blank text stream. Redirecting execution to text fallback engine...")
+                            raise ValueError("Primary parser generated blank text stream.")
                 except Exception as primary_error:
                     print(f"Warning: Primary styling parser bypassed for {filename}. Cause: {primary_error}")
-                    
-                    # Core Fallback Method: Docx2Txt (Strips formatting but completely isolates structural text strings safely)
                     try:
                         extraction_method = "Docx2Txt Flat Text Extraction Fallback"
                         fallback_raw_text = docx2txt.process(current_working_file)
                         if fallback_raw_text:
                             markdown_content = f"# Extracted Document Content (Plaintext Restructure)\n\n{fallback_raw_text}"
                         else:
-                            raise EOFError("All text parsing engines evaluated the target file stream as completely empty.")
+                            raise EOFError("All text parsing engines failed.")
                     except Exception as critical_fallback_error:
                         print(f"FATAL ERROR: Could not parse text strings from file {filename}: {critical_fallback_error}")
                         continue
 
-                # FEATURE 3: Intelligent Gemini Metadata & Smart Tag Generation
+                # Gemini Metadata Processing
                 summary_prompt = "Analyze this text segment and return exactly one clear, professional executive summary sentence highlighting the target objective."
                 tags_prompt = "Analyze this text segment and return exactly one single-line JSON list containing 3 descriptive, thematic category tags. Example: ['finance', 'legal', 'agreements']."
                 
-                ai_summary = query_gemini_api(summary_prompt, markdown_content)
+                raw_summary = query_gemini_api(summary_prompt, markdown_content)
                 ai_tags_string = query_gemini_api(tags_prompt, markdown_content)
                 
-                # Format Verification: Sanitize tags array to guarantee safety for Obsidian parsing
+                # FIXED: Sanitize strings safely before placing them inside the file headers
+                clean_summary = raw_summary.replace('&quot;', '').replace('&amp;', '&').replace('"', '')
                 if not ai_tags_string.startswith('['):
                     ai_tags_string = "['documents', 'archive']"
 
-                # FEATURE 4: Clean Markdown Generation with Unified Front Matter
+                # Write Markdown Output File
                 try:
                     with open(md_path, 'w', encoding='utf-8') as out_file:
                         out_file.write("---\n")
                         out_file.write(f"source_file: \"{filename}\"\n")
                         out_file.write(f"processed_at: \"{datetime.now().strftime('%Y-%m-%d')}\"\n")
                         out_file.write(f"extraction_engine: \"{extraction_method}\"\n")
-                        out_file.write(f"summary: \"{ai_summary.replace('&quot;', '').replace('&amp;', '&').replace('\"', '')}\"\n")
+                        out_file.write(f"summary: \"{clean_summary}\"\n") # Clean string reference, no backslashes inside f-string!
                         out_file.write(f"tags: {ai_tags_string}\n")
                         out_file.write("---\n\n")
                         out_file.write(markdown_content)
@@ -176,16 +166,15 @@ jobs:
                     print(f"File writing error while creating Markdown for {filename}: {io_err}")
                     continue
 
-                # FEATURE 5: Clean-up Operations (Pruning original files)
+                # File Cleanup and Optimization
                 try:
-                    os.remove(file_path) # Deletes original .doc or .docx
+                    os.remove(file_path)
                     if temp_docx_created and os.path.exists(current_working_file):
-                        os.remove(current_working_file) # Cleans up temporary bridged files
-                    print(f"Successfully optimized file storage and pruned asset: {filename}")
+                        os.remove(current_working_file)
                 except Exception as prune_err:
-                    print(f"Cleanup non-fatal warning for asset {filename}: {prune_err}")
+                    print(f"Cleanup warning for asset {filename}: {prune_err}")
 
-        # FEATURE 6: Auto-Index Syncing File Generation
+        # GENERATE LIVING INDEX
         print("Re-indexing unified document library grid tracking matrices...")
         catalog_path = "VAULT_INDEX.md"
         all_markdown_files = []
@@ -204,8 +193,6 @@ jobs:
                 for mdp in sorted(all_markdown_files):
                     fname = os.path.basename(mdp)
                     clean_display = fname.replace(".md", "").replace("_", " ").title()
-                    
-                    # Establish fallback default tracking strings
                     engine_used = "Standard"
                     tags_list = "['general']"
                     abstract_summary = "Summary metadata compilation index pending."
